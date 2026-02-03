@@ -34,7 +34,7 @@ def get_inngest_client() -> inngest.Inngest:
         app_id="rag_app",
         is_production=is_prod, # <--- IMPORTANT: We are now in Production!
         event_key=inngest_key,
-        base_url=inngest_url,
+        
     )
 
 
