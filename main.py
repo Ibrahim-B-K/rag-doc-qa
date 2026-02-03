@@ -2,13 +2,12 @@ import logging
 from fastapi import FastAPI
 import inngest
 import inngest.fast_api
-# Remove 'from inngest.experimental import ai' - we don't need this wrapper for Gemini
 from dotenv import load_dotenv
 import uuid
 import os
 import datetime
 
-# LlamaIndex Settings (This holds our Gemini configuration)
+# LlamaIndex Settings
 from llama_index.core import Settings
 
 from data_loader import load_chunk_pdf, embed_texts
@@ -17,16 +16,36 @@ from custom_types import RAGChunkAndSrc, RAGUpsertResult, RAGSearchResult, RAGQu
 
 load_dotenv()
 
+# --- CONFIGURATION FIXES ---
+
+# 1. Detect Environment
+my_signing_key = os.getenv("INNGEST_SIGNING_KEY")
+is_prod = my_signing_key is not None
+render_url = os.getenv("RENDER_EXTERNAL_URL")
+
+# 2. Determine Public URL (Critical for Render!)
+if render_url:
+    # If on Render, tell Inngest to use the public URL
+    my_serve_url = f"{render_url}/api/inngest"
+    print(f"🚀 PRODUCTION MODE: Telling Inngest to reach me at: {my_serve_url}")
+else:
+    # If local, let Inngest guess (usually http://127.0.0.1:8000)
+    my_serve_url = None
+    print("🛠️  DEV MODE: Running locally")
+
+# 3. Initialize Client with Explicit Keys
 inngest_client = inngest.Inngest(
     app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
-    is_production=os.getenv("INNGEST_SIGNING_KEY") is not None,
+    is_production=is_prod,
+    signing_key=my_signing_key,  # Explicitly pass key
+    event_key=os.getenv("INNGEST_EVENT_KEY"),
     serializer=inngest.PydanticSerializer()
 )
 
 # --- Function 1: Ingest PDF ---
 @inngest_client.create_function(
-    fn_id="RAG: Inngest PDF",
+    fn_id="RAG: Ingest PDF",  # Fixed typo: "Ingest" vs "Inngest"
     trigger=inngest.TriggerEvent(event="rag/ingest_pdf")
 )
 async def rag_inngest_pdf(ctx: inngest.Context):
@@ -34,14 +53,12 @@ async def rag_inngest_pdf(ctx: inngest.Context):
         pdf_path = ctx.event.data["pdf_path"]
         source_id = ctx.event.data.get("source_id", pdf_path)
         chunks = load_chunk_pdf(pdf_path)
-        # Fix: Ensure source_id is passed if your updated custom_types expects it
         return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
     
     def _upsert(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
         chunks = chunks_and_src.chunks
         source_id = chunks_and_src.source_id
         
-        # Check for empty chunks to prevent Qdrant 400 Error
         if not chunks:
             print(f"⚠️ PDF '{source_id}' contained no text! Skipping.")
             return RAGUpsertResult(inngested=0)
@@ -58,34 +75,28 @@ async def rag_inngest_pdf(ctx: inngest.Context):
     return inngested.model_dump()
 
 
-# --- Function 2: Query PDF (The New Part) ---
+# --- Function 2: Query PDF ---
 @inngest_client.create_function(
     fn_id="RAG: Query PDF",
     trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
 )
 async def rag_query_pdf(ctx: inngest.Context):
     
-    # 1. Search the Vector DB
     def _search(question: str, top_k: int = 5):
         query_vec = embed_texts([question])[0]
         store = QdrantStorage()
         found = store.search(query_vec, top_k)
         return RAGSearchResult(contexts=found["contexts"], sources=found["sources"])
     
-    # 2. Generate Answer with Gemini
     async def _generate_answer(prompt: str):
-        # CHANGE 2: Use 'acomplete' (Async) instead of 'complete' (Sync)
-        # This uses the existing event loop instead of trying to start a new one
         response = await Settings.llm.acomplete(prompt)
         return str(response)
 
     question = ctx.event.data["question"]
     top_k = int(ctx.event.data.get("top_k", 5))
 
-    # Step 1: Get Context
     found = await ctx.step.run("embed-and-search", lambda: _search(question, top_k), output_type=RAGSearchResult)
 
-    # Prepare the prompt
     context_block = "\n\n".join(f"- {c}" for c in found.contexts)
     user_content = (
         "Use the following context to answer the question.\n\n"
@@ -94,10 +105,7 @@ async def rag_query_pdf(ctx: inngest.Context):
         "Answer concisely using the context above."
     )
 
-    # Step 2: Ask Gemini (Replaces the OpenAI Adapter)
     answer_text = await ctx.step.run("llm-generate", lambda: _generate_answer(user_content))
-    
-    # Clean up the string (Replaces .stril())
     answer_text = answer_text.strip()
 
     return {"answer": answer_text, "sources": found.sources, "num_contexts": len(found.contexts)}
@@ -105,5 +113,15 @@ async def rag_query_pdf(ctx: inngest.Context):
 
 app = FastAPI()
 
-# IMPORTANT: You must register BOTH functions here!
-inngest.fast_api.serve(app, inngest_client, functions=[rag_inngest_pdf, rag_query_pdf])
+# --- FIX 4: Health Check Endpoint ---
+@app.get("/")
+def read_root():
+    return {"status": "alive", "message": "RAG Backend is running correctly"}
+
+# --- SERVER REGISTRATION ---
+inngest.fast_api.serve(
+    app, 
+    inngest_client, 
+    functions=[rag_inngest_pdf, rag_query_pdf],
+    serve_url=my_serve_url # <--- THIS IS THE KEY FIX
+)
