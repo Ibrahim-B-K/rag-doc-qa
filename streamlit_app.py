@@ -15,7 +15,12 @@ st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="center
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app", is_production=False)
+    # UPDATED: Use the Event Key from secrets (we will set this up next)
+    return inngest.Inngest(
+        app_id="rag_app",
+        is_production=True, # <--- IMPORTANT: We are now in Production!
+        event_key=os.getenv("INNGEST_EVENT_KEY")
+    )
 
 
 def save_uploaded_pdf(file) -> Path:
@@ -73,8 +78,8 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
 
 
 def _inngest_api_base() -> str:
-    # Local dev server default; configurable via env
-    return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
+    # UPDATED: Point to the real Inngest Cloud API
+    return "https://api.inngest.com/v1"
 
 
 def fetch_runs(event_id: str) -> list[dict]:
