@@ -1,91 +1,58 @@
 import asyncio
 from pathlib import Path
 import time
+import os
 
 import streamlit as st
 import inngest
 from dotenv import load_dotenv
-import os
 import requests
+from pypdf import PdfReader
 
 load_dotenv()
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
-# Check if we are running on Streamlit Cloud by looking for secrets
+# --- CONFIGURATION ---
 IS_CLOUD = st.secrets.get("INNGEST_EVENT_KEY") is not None
 
 if IS_CLOUD:
-    # PRODUCTION SETTINGS (Streamlit Cloud)
     inngest_key = st.secrets["INNGEST_EVENT_KEY"]
     inngest_url = "https://api.inngest.com/v1"
     is_prod = True
 else:
-    # LOCAL SETTINGS (Your Laptop)
-    # This assumes you are running 'npx inngest-cli dev' locally
-    inngest_key = "test"  # Local dev server doesn't check keys
+    inngest_key = "test"
     inngest_url = "http://127.0.0.1:8288/v1"
     is_prod = False
 
-
 def get_inngest_client() -> inngest.Inngest:
-    # UPDATED: Use the Event Key from secrets (we will set this up next)
     return inngest.Inngest(
         app_id="rag_app",
-        is_production=is_prod, # <--- IMPORTANT: We are now in Production!
+        is_production=is_prod,
         event_key=inngest_key,
-        
     )
 
+# --- ASYNC EVENT SENDERS ---
 
-def save_uploaded_pdf(file) -> Path:
-    uploads_dir = Path("uploads")
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-    file_path = uploads_dir / file.name
-    file_bytes = file.getbuffer()
-    file_path.write_bytes(file_bytes)
-    return file_path
-
-
-async def send_rag_ingest_event(pdf_path: Path) -> None:
+async def send_rag_ingest_text_event(filename: str, text: str) -> None:
+    """
+    Async function to send the text event. 
+    Must be called with asyncio.run() from the main script.
+    """
     client = get_inngest_client()
     await client.send(
         inngest.Event(
-            name="rag/ingest_pdf",
+            name="rag/ingest_text", # <--- Updated Event Name
             data={
-                "pdf_path": str(pdf_path.resolve()),
-                "source_id": pdf_path.name,
+                "filename": filename,
+                "text": text, # <--- Sending actual text
             },
         )
     )
 
-
-st.title("Upload a PDF to Ingest")
-uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
-
-if uploaded is not None:
-    # Generate a unique ID for this file so we don't process it twice
-    file_id = f"processed_{uploaded.name}_{uploaded.size}"
-
-    if file_id not in st.session_state:
-        with st.spinner("Uploading and triggering ingestion..."):
-            path = save_uploaded_pdf(uploaded)
-            asyncio.run(send_rag_ingest_event(path))
-            time.sleep(0.3)
-            # Mark as done
-            st.session_state[file_id] = True
-            
-        st.success(f"Triggered ingestion for: {path.name}")
-    else:
-        st.info(f"Already processed: {uploaded.name}")
-
-st.divider()
-st.title("Ask a question about your PDFs")
-
-
-async def send_rag_query_event(question: str, top_k: int) -> None:
+async def send_rag_query_event(question: str, top_k: int) -> str:
     client = get_inngest_client()
-    result = await client.send(
+    ids = await client.send(
         inngest.Event(
             name="rag/query_pdf_ai",
             data={
@@ -94,26 +61,20 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
             },
         )
     )
+    return ids[0]
 
-    return result[0]
-
+# --- HELPER FUNCTIONS ---
 
 def _inngest_api_base() -> str:
-    # UPDATED: Point to the real Inngest Cloud API
     return inngest_url
-
 
 def fetch_runs(event_id: str) -> list[dict]:
     base_url = _inngest_api_base()
     url = f"{base_url}/events/{event_id}/runs"
     
     headers = {}
-    
-    # If we are talking to the real Inngest Cloud, we MUST have the Signing Key
     if "api.inngest.com" in base_url:
-        # Try to get key from Streamlit secrets (Cloud) or env vars (Local)
         signing_key = st.secrets.get("INNGEST_SIGNING_KEY") or os.getenv("INNGEST_SIGNING_KEY")
-        
         if signing_key:
             headers["Authorization"] = f"Bearer {signing_key}"
         else:
@@ -124,8 +85,7 @@ def fetch_runs(event_id: str) -> list[dict]:
     data = resp.json()
     return data.get("data", [])
 
-
-def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
+def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 1.0) -> dict:
     start = time.time()
     last_status = None
     while True:
@@ -134,14 +94,53 @@ def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s
             run = runs[0]
             status = run.get("status")
             last_status = status or last_status
+            
             if status in ("Completed", "Succeeded", "Success", "Finished"):
                 return run.get("output") or {}
+            
             if status in ("Failed", "Cancelled"):
                 raise RuntimeError(f"Function run {status}")
+        
         if time.time() - start > timeout_s:
             raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
+        
         time.sleep(poll_interval_s)
 
+# --- UI LAYOUT ---
+
+st.title("Upload a PDF to Ingest")
+uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
+
+if uploaded is not None:
+    # Unique ID to prevent re-processing on every redraw
+    file_id = f"processed_{uploaded.name}_{uploaded.size}"
+
+    if file_id not in st.session_state:
+        with st.spinner("Extracting text and triggering ingestion..."):
+            
+            # 1. Extract Text Locally
+            try:
+                reader = PdfReader(uploaded)
+                text_content = ""
+                for page in reader.pages:
+                    text_content += page.extract_text() + "\n"
+                
+                # 2. Send Event
+                # asyncio.run is required because we are calling async from sync context
+                asyncio.run(send_rag_ingest_text_event(uploaded.name, text_content))
+                
+                # 3. Mark as done
+                st.session_state[file_id] = True
+                st.success(f"Successfully extracted {len(text_content)} characters and sent to backend!")
+                
+            except Exception as e:
+                st.error(f"Error reading PDF: {e}")
+            
+    else:
+        st.info(f"Already processed: {uploaded.name}")
+
+st.divider()
+st.title("Ask a question about your PDFs")
 
 with st.form("rag_query_form"):
     question = st.text_input("Your question")
@@ -150,16 +149,18 @@ with st.form("rag_query_form"):
 
     if submitted and question.strip():
         with st.spinner("Sending event and generating answer..."):
-            # Fire-and-forget event to Inngest for observability/workflow
-            event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
-            # Poll the local Inngest API for the run's output
-            output = wait_for_run_output(event_id)
-            answer = output.get("answer", "")
-            sources = output.get("sources", [])
+            try:
+                event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
+                output = wait_for_run_output(event_id)
+                answer = output.get("answer", "")
+                sources = output.get("sources", [])
 
-        st.subheader("Answer")
-        st.write(answer or "(No answer)")
-        if sources:
-            st.caption("Sources")
-            for s in sources:
-                st.write(f"- {s}")
+                st.subheader("Answer")
+                st.write(answer or "(No answer received)")
+                
+                if sources:
+                    st.caption("Sources")
+                    for s in sources:
+                        st.write(f"- {s}")
+            except Exception as e:
+                st.error(f"Error during query: {e}")
