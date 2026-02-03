@@ -27,7 +27,7 @@ else:
     inngest_url = "http://127.0.0.1:8288/v1"
     is_prod = False
 
-@st.cache_resource
+
 def get_inngest_client() -> inngest.Inngest:
     # UPDATED: Use the Event Key from secrets (we will set this up next)
     return inngest.Inngest(
@@ -64,14 +64,20 @@ st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
 
 if uploaded is not None:
-    with st.spinner("Uploading and triggering ingestion..."):
-        path = save_uploaded_pdf(uploaded)
-        # Kick off the event and block until the send completes
-        asyncio.run(send_rag_ingest_event(path))
-        # Small pause for user feedback continuity
-        time.sleep(0.3)
-    st.success(f"Triggered ingestion for: {path.name}")
-    st.caption("You can upload another PDF if you like.")
+    # Generate a unique ID for this file so we don't process it twice
+    file_id = f"processed_{uploaded.name}_{uploaded.size}"
+
+    if file_id not in st.session_state:
+        with st.spinner("Uploading and triggering ingestion..."):
+            path = save_uploaded_pdf(uploaded)
+            asyncio.run(send_rag_ingest_event(path))
+            time.sleep(0.3)
+            # Mark as done
+            st.session_state[file_id] = True
+            
+        st.success(f"Triggered ingestion for: {path.name}")
+    else:
+        st.info(f"Already processed: {uploaded.name}")
 
 st.divider()
 st.title("Ask a question about your PDFs")
