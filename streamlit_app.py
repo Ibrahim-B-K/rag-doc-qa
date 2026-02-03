@@ -12,14 +12,29 @@ load_dotenv()
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
+# Check if we are running on Streamlit Cloud by looking for secrets
+IS_CLOUD = st.secrets.get("INNGEST_EVENT_KEY") is not None
+
+if IS_CLOUD:
+    # PRODUCTION SETTINGS (Streamlit Cloud)
+    inngest_key = st.secrets["INNGEST_EVENT_KEY"]
+    inngest_url = "https://api.inngest.com/v1"
+    is_prod = True
+else:
+    # LOCAL SETTINGS (Your Laptop)
+    # This assumes you are running 'npx inngest-cli dev' locally
+    inngest_key = "test"  # Local dev server doesn't check keys
+    inngest_url = "http://127.0.0.1:8288/v1"
+    is_prod = False
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
     # UPDATED: Use the Event Key from secrets (we will set this up next)
     return inngest.Inngest(
         app_id="rag_app",
-        is_production=True, # <--- IMPORTANT: We are now in Production!
-        event_key=os.getenv("INNGEST_EVENT_KEY")
+        is_production=is_prod, # <--- IMPORTANT: We are now in Production!
+        event_key=inngest_key,
+        base_url=inngest_url,
     )
 
 
@@ -79,7 +94,7 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
 
 def _inngest_api_base() -> str:
     # UPDATED: Point to the real Inngest Cloud API
-    return "https://api.inngest.com/v1"
+    return inngest_url
 
 
 def fetch_runs(event_id: str) -> list[dict]:
