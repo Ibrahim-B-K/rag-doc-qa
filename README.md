@@ -1,0 +1,1 @@
+A Python application that uses RAG (Retrieval Augmented Generation) to efficiently search and retrieve context from large PDF documents. Uses Qdrant for vector storage, Inngest for event-driven workflow orchestration, and Google Gemini for embedding generation and natural language synthesis.
