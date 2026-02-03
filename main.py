@@ -16,36 +16,31 @@ from custom_types import RAGChunkAndSrc, RAGUpsertResult, RAGSearchResult, RAGQu
 
 load_dotenv()
 
-# --- CONFIGURATION FIXES ---
+# --- FIX 1: Set the Serve Origin via Environment Variable ---
+# This tells Inngest: "My public URL is https://rag-doc-qa-w2xn.onrender.com"
+# The SDK automatically appends "/api/inngest" to this.
+render_url = os.getenv("RENDER_EXTERNAL_URL")
+if render_url:
+    os.environ["INNGEST_SERVE_ORIGIN"] = render_url
+    print(f"🚀 PRODUCTION MODE: Set INNGEST_SERVE_ORIGIN to {render_url}")
 
-# 1. Detect Environment
+# --- FIX 2: Detect Environment ---
 my_signing_key = os.getenv("INNGEST_SIGNING_KEY")
 is_prod = my_signing_key is not None
-render_url = os.getenv("RENDER_EXTERNAL_URL")
 
-# 2. Determine Public URL (Critical for Render!)
-if render_url:
-    # If on Render, tell Inngest to use the public URL
-    my_serve_url = f"{render_url}/api/inngest"
-    print(f"🚀 PRODUCTION MODE: Telling Inngest to reach me at: {my_serve_url}")
-else:
-    # If local, let Inngest guess (usually http://127.0.0.1:8000)
-    my_serve_url = None
-    print("🛠️  DEV MODE: Running locally")
-
-# 3. Initialize Client with Explicit Keys
+# Initialize Client
 inngest_client = inngest.Inngest(
     app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
     is_production=is_prod,
-    signing_key=my_signing_key,  # Explicitly pass key
+    signing_key=my_signing_key,
     event_key=os.getenv("INNGEST_EVENT_KEY"),
     serializer=inngest.PydanticSerializer()
 )
 
 # --- Function 1: Ingest PDF ---
 @inngest_client.create_function(
-    fn_id="RAG: Ingest PDF",  # Fixed typo: "Ingest" vs "Inngest"
+    fn_id="RAG: Ingest PDF",
     trigger=inngest.TriggerEvent(event="rag/ingest_pdf")
 )
 async def rag_inngest_pdf(ctx: inngest.Context):
@@ -113,7 +108,7 @@ async def rag_query_pdf(ctx: inngest.Context):
 
 app = FastAPI()
 
-# --- FIX 4: Health Check Endpoint ---
+# Health Check
 @app.get("/")
 def read_root():
     return {"status": "alive", "message": "RAG Backend is running correctly"}
@@ -122,6 +117,6 @@ def read_root():
 inngest.fast_api.serve(
     app, 
     inngest_client, 
-    functions=[rag_inngest_pdf, rag_query_pdf],
-    serve_url=my_serve_url # <--- THIS IS THE KEY FIX
+    functions=[rag_inngest_pdf, rag_query_pdf]
+    # REMOVED the invalid 'serve_url' argument
 )
