@@ -104,8 +104,22 @@ def _inngest_api_base() -> str:
 
 
 def fetch_runs(event_id: str) -> list[dict]:
-    url = f"{_inngest_api_base()}/events/{event_id}/runs"
-    resp = requests.get(url)
+    base_url = _inngest_api_base()
+    url = f"{base_url}/events/{event_id}/runs"
+    
+    headers = {}
+    
+    # If we are talking to the real Inngest Cloud, we MUST have the Signing Key
+    if "api.inngest.com" in base_url:
+        # Try to get key from Streamlit secrets (Cloud) or env vars (Local)
+        signing_key = st.secrets.get("INNGEST_SIGNING_KEY") or os.getenv("INNGEST_SIGNING_KEY")
+        
+        if signing_key:
+            headers["Authorization"] = f"Bearer {signing_key}"
+        else:
+            st.error("Missing INNGEST_SIGNING_KEY in secrets!")
+
+    resp = requests.get(url, headers=headers)
     resp.raise_for_status()
     data = resp.json()
     return data.get("data", [])
