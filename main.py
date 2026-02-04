@@ -9,7 +9,7 @@ import os
 # LlamaIndex Settings
 from llama_index.core import Settings
 
-# We still import these for the embedding/DB logic
+
 from data_loader import embed_texts 
 from vector_db import QdrantStorage
 from custom_types import RAGUpsertResult, RAGSearchResult
@@ -20,8 +20,7 @@ load_dotenv()
 render_url = os.getenv("RENDER_EXTERNAL_URL")
 if render_url:
     os.environ["INNGEST_SERVE_ORIGIN"] = render_url
-    print(f"🚀 PRODUCTION MODE: Set INNGEST_SERVE_ORIGIN to {render_url}")
-
+    
 my_signing_key = os.getenv("INNGEST_SIGNING_KEY")
 is_prod = my_signing_key is not None
 
@@ -35,14 +34,14 @@ inngest_client = inngest.Inngest(
     serializer=inngest.PydanticSerializer()
 )
 
-# --- Function 1: Ingest TEXT (Replaces the PDF File Handler) ---
+# --- Function 1: Ingest TEXT  ---
 @inngest_client.create_function(
     fn_id="RAG: Ingest Text",
-    trigger=inngest.TriggerEvent(event="rag/ingest_text") # Listening for the new event
+    trigger=inngest.TriggerEvent(event="rag/ingest_text") 
 )
 async def rag_ingest_text(ctx: inngest.Context):
     
-    # Simple chunking logic to replace the file loader
+    
     def _chunk_text(text: str, chunk_size=1000, overlap=100):
         if not text:
             return []
@@ -73,12 +72,12 @@ async def rag_ingest_text(ctx: inngest.Context):
         
         return RAGUpsertResult(inngested=len(chunks))
 
-    # We skip the "load" step since we already have text, just process it
+   
     result = await ctx.step.run("chunk-embed-upsert", lambda: _process_text(ctx), output_type=RAGUpsertResult)
     return result.model_dump()
 
 
-# --- Function 2: Query PDF (Unchanged) ---
+# Function 2: Query PDF 
 @inngest_client.create_function(
     fn_id="RAG: Query PDF",
     trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
@@ -123,5 +122,5 @@ def read_root():
 inngest.fast_api.serve(
     app, 
     inngest_client, 
-    functions=[rag_ingest_text, rag_query_pdf] # <--- Updated to use the text function
+    functions=[rag_ingest_text, rag_query_pdf] 
 )

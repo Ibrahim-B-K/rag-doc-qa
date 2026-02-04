@@ -126,7 +126,7 @@ if uploaded is not None:
                     text_content += page.extract_text() + "\n"
                 
                 # 2. Send Event
-                # asyncio.run is required because we are calling async from sync context
+                # asyncio.run is required because  calling async from sync context
                 asyncio.run(send_rag_ingest_text_event(uploaded.name, text_content))
                 
                 # 3. Mark as done
